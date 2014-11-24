@@ -1,3 +1,4 @@
+#!/usr/bin/python
 """
 usage: netlaborious (upload|clone|mkpod|rmpod) [options]
        netlaborious --help
@@ -38,6 +39,7 @@ mkpod options:
 rmpod options:
   --name NAME           name of the pod to remove
 """
+from __future__ import print_function
 import contextlib
 import getpass
 import logging
@@ -52,7 +54,7 @@ import pyVim.connect
 import pyVmomi
 
 
-formatter = logging.Formatter(fmt='[{name}:{levelname}] {message}', style='{')
+formatter = logging.Formatter(fmt='[%(name)s:%(levelname)s] %(message)s')
 handler = logging.StreamHandler()
 handler.setFormatter(formatter)
 logger = logging.getLogger('netlaborious')
@@ -61,11 +63,11 @@ logger.setLevel(logging.INFO)
 del formatter, handler
 
 
-def require(*options, command=None):
+def require(*options, **kwargs):
     missing = [o for o in options if args[o] is None]
-    if command and missing:
+    if kwargs.get('command') and missing:
         logger.info('command "{}" requires option(s) {}'
-             .format(command, ', '.join(missing)))
+             .format(kwargs['command'], ', '.join(missing)))
     for option in missing:
         prompt = 'Enter value for option {}: '.format(option)
         args[option] = input(prompt)
@@ -81,6 +83,7 @@ def make_clone_name(vm):
         base = old_name
         number = 0
     return '{}-{}'.format(base, number)
+
 
 @contextlib.contextmanager
 def pysphere_connection():
@@ -109,7 +112,7 @@ def vsphere_connection():
                 pwd=password,
                 port=int(args['--vsphere-port']))
     except requests.exceptions.ConnectionError as e:
-        raise ConnectionError('Failed to connect to vSphere') from e
+        raise ConnectionError('Failed to connect to vSphere', e)
     logger.debug('connected to vSphere')
     yield service_instance
     pyVim.connect.Disconnect(service_instance)
@@ -142,7 +145,7 @@ def action_clone():
         source = server.get_vm_by_name(args['--source-vm'])
 
         clone_name = make_clone_name(source)
-        logger.debug('Creating clone {!r}'.format(clone_name)
+        logger.debug('Creating clone {!r}'.format(clone_name))
         clone = source.clone(clone_name, power_on=False)
 
         target_host = next(host for host, hostname in server.get_hosts().items()
@@ -156,12 +159,12 @@ def action_clone():
 
 def action_mkpod():
     require('--name', '--vm')
-    ...
+    raise NotImplemented
 
 
 def action_rmpod():
     require('--name')
-    ...
+    raise NotImplemented
 
 
 if __name__ == '__main__':

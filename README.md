@@ -3,8 +3,8 @@ setups.
 
 # Usage
 
-Create a Python 3 virtualenv, install dependencies, run the script.
+Create a virtualenv, install dependencies, run the script.
 
-    $ virtualenv3 env
+    $ virtualenv env
     $ env/bin/pip install -r requirements.txt
     $ env/bin/python netlaborious.py
