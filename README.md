@@ -14,12 +14,12 @@ Then run the script using the virtualenv Python:
 
 # Usage
 
-    $ netlaborious [--verbose] [--dry-run] <command> [options]
+    $ netlaborious.py [--verbose] <command> [options]
 
 ## Batch mode
 
 If `<command>` is `batch`, netlaborious will read lines of `<command> [options]`
 from stdin.  This is done using Python's `shlex` module, so normal shell-style
-word splitting is performed.  If a line begins with the special command `ARGS`,
-the arguments specified on that line will be applied to every following command
-(or until the next `ARGS` line).
+word splitting is performed, and lines starting with `#` are ignored.  If a line
+begins with the special command `ARGS`, the options specified on that line will
+be applied to every following command (until the next `ARGS` line).
