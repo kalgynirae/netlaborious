@@ -6,8 +6,10 @@ usage: netlaborious [--verbose] (batch|upload|clone) [options]
 Commands:
   batch                 Read lines of arguments from stdin. Each line
                         corresponds to a single invocation of this script.
+  check                 Check whether the existing VMs have unique names.
   clone                 Clone an existing VM to all other hosts (and make
                         snapshots).
+  info                  Print detailed information about a VM.
   upload                Upload an OVF template to a particular host and make
                         a snapshot of it.
 
@@ -29,6 +31,7 @@ import contextlib
 import getpass
 import inspect
 import logging
+import pprint
 import re
 import shlex
 import sys
@@ -83,7 +86,7 @@ def main():
             # Only process if the line wasn't blank (or a comment)
             if words:
                 try:
-                    commands.append(parse_args(words, lineno=n))
+                    commands.append(parse_args(words, lineno=n) + (line,))
                 except ArgumentParseError as e:
                     logger.error(e)
                     errors = True
@@ -91,13 +94,13 @@ def main():
             logger.error('aborting due to errors; no commands were run.')
             return 1
     else:
-        commands = [(command, options)]
+        commands = [(command, options, None)]
 
     # Prepare the commands and make sure the required options were provided
     errors = False
     funcs = []
     persistent_options = {}
-    for n, (command, options) in enumerate(commands, start=1):
+    for n, (command, options, line) in enumerate(commands, start=1):
         maybe_line = '[line %s] ' % n if batch_mode else ''
         persistent_options_copy = persistent_options.copy()
         persistent_options_copy.update(options)
@@ -123,13 +126,15 @@ def main():
                          (maybe_line, command, missing))
             errors = True
 
-        funcs.append(lambda a=values: command_func(*a))
+        funcs.append((lambda v=values, cf=command_func: cf(*v), line))
     if errors:
         logger.error('aborting due to errors; no commands were run.')
         return 1
 
     # Actually execute the commands
-    for func in funcs:
+    for func, line in funcs:
+        if line:
+            print(line, file=sys.stderr, end='')
         func()
 
 
@@ -149,29 +154,28 @@ def command(func):
 
 
 @command
-def upload(vshost, vsuser, ovf, vm, dest_host, dest_folder=None,
-           network=None, provisioning=None, vsport=443):
-    logger.info(['upload', vshost, vsuser, ovf, vm, dest_host, dest_folder,
-                  network, provisioning, vsport])
-    with vsphere_connection(vshost, vsuser, vsport) as conn:
-        content = conn.RetrieveContent()
-        params = pyVmomi.vim.OvfManager.ParseDescriptorParams()
-        with open(ovf) as f:
-            result = content.ovfManager.ParseDescriptor(f.read(), params)
-        #datacenter = content.rootFolder.childEntity[0]
-        #vmfolder = datacenter.vmFolder
-        #hosts = datacenter.hostFolder.childEntity
-        #resource_pool = hosts[0].resourcePool
+def check(vshost, vsuser):
+    logger.debug(['check', vshost, vsuser])
+    with pysphere_connection(vshost, vsuser) as server:
+        paths = server.get_registered_vms()
+        names = []
+        for path in paths:
+            name = server.get_vm_by_path(path).get_property('name')
+            names.append(name)
+            print('name=%r path=%r' % (name, path))
+        print('%s names total' % len(names))
+        print('%s unique names' % len(set(names)))
 
 
 @command
 def clone(vshost, vsuser, vm, dest_host, snapshot=None):
-    logger.info(['clone', vshost, vsuser, vm, dest_host, snapshot])
+    logger.debug(['clone', vshost, vsuser, vm, dest_host, snapshot])
     with pysphere_connection(vshost, vsuser) as server:
         logger.debug('Fetching VM {!r}'.format(vm))
         source = server.get_vm_by_name(vm)
+        source_name = source.get_property('name')
 
-        clone_name = make_clone_name(source.get_property('name'))
+        clone_name = make_unique_name(source_name)
         logger.debug('Creating clone {!r}'.format(clone_name))
         clone = source.clone(clone_name, power_on=False)
 
@@ -182,6 +186,30 @@ def clone(vshost, vsuser, vm, dest_host, snapshot=None):
 
         logger.debug('Creating snapshot {!r}'.format(snapshot))
         clone.create_snapshot(snapshot)
+
+
+@command
+def info(vshost, vsuser, vm):
+    logger.debug(['info', vshost, vsuser, vm])
+    with pysphere_connection(vshost, vsuser) as server:
+        v = server.get_vm_by_name(vm)
+        pprint.pprint(v.get_properties())
+
+
+@command
+def upload(vshost, vsuser, ovf, vm, dest_host, dest_folder=None,
+           network=None, provisioning=None, vsport=443):
+    logger.debug(['upload', vshost, vsuser, ovf, vm, dest_host, dest_folder,
+                  network, provisioning, vsport])
+    with vsphere_connection(vshost, vsuser, vsport) as conn:
+        content = conn.RetrieveContent()
+        params = pyVmomi.vim.OvfManager.ParseDescriptorParams()
+        with open(ovf) as f:
+            result = content.ovfManager.ParseDescriptor(f.read(), params)
+        #datacenter = content.rootFolder.childEntity[0]
+        #vmfolder = datacenter.vmFolder
+        #hosts = datacenter.hostFolder.childEntity
+        #resource_pool = hosts[0].resourcePool
 
 
 @contextlib.contextmanager
@@ -222,7 +250,7 @@ def get_password(host, username):
 get_password._saved = {}
 
 
-def make_clone_name(original_name):
+def make_unique_name(original_name):
     match = re.match('(.*)-([0-9]+)$', original_name)
     if match:
         base = match.group(1)

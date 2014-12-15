@@ -1,5 +1,4 @@
-**netlaborious** is a set of Python tools to ease managing vSphere and NETLAB+
-setups.
+**netlaborious** is a Python tool to ease managing vSphere and NETLAB+ setups.
 
 # Setup
 
