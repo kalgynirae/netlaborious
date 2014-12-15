@@ -1,4 +1,3 @@
-#!/usr/bin/python
 """
 usage: netlaborious [--verbose] (batch|upload|clone) [options]
        netlaborious --help
@@ -13,37 +12,31 @@ Commands:
   upload                Upload an OVF template to a particular host and make
                         a snapshot of it.
 
-Options:
-  --verbose             print detailed messages for debugging
-  --vshost HOST         vSphere host [default: localhost]
-  --vsport PORT         vSphere port [default: 443]
-  --vsuser USER         vSphere username
-  --dest-host HOST      destination host
-  --dest-folder FOLDER  destination folder [default: TestFolder]
-  --network NETWORK     network mapping [default: SAFETY NET]
-  --ovf OVF             the OVF template to upload
-  --provisioning PROV   provisioning type [default: thin]
-  --vm NAME             name of the VM to be created/attached/used
-  --snapshot NAME       name of snapshot (if not specified, no snapshot)
+Common options:
+    --vshost HOST       vSphere host (default: localhost)
+    --vsport PORT       vSphere port (default: 443)
+    --vsuser USER       vSphere username
 """
 from __future__ import print_function
 import contextlib
+import functools
 import getpass
 import inspect
+import itertools
 import logging
+import operator
 import pprint
 import re
 import shlex
 import sys
 
-import bs4
 import pysphere
 import pyVim.connect
 import pyVmomi
 
 
 _COMMANDS = {}
-_NO_ARG_OPTIONS = ['--verbose']
+_NO_ARG_OPTIONS = ['--help', '--verbose']
 
 logger = logging.getLogger('netlaborious')
 logger.setLevel(logging.INFO)
@@ -66,11 +59,14 @@ def main():
         command, options = parse_args(sys.argv[1:])
     except ArgumentParseError as e:
         logger.error(e)
-        print(__doc__, file=sys.stderr)
+        print(__doc__, end='', file=sys.stderr)
         return 1
-    if '-v' in options or '--verbose' in options:
+    if '--help' in options:
+        print(__doc__, end='', file=sys.stderr)
+        return 0
+    if '--verbose' in options:
         logger.setLevel(logging.DEBUG)
-    logger.debug('verbose mode enabled')
+    logger.debug('debug-level logging is enabled')
 
     # Decide whether to read from stdin
     batch_mode = command == 'batch'
@@ -81,7 +77,7 @@ def main():
             try:
                 words = shlex.split(line, comments=True)
             except ValueError as e:
-                logger.error('[line %s] %s' % (n, e))
+                logger.error('[line %s] %s', n, e)
                 errors = True
             # Only process if the line wasn't blank (or a comment)
             if words:
@@ -111,7 +107,7 @@ def main():
         try:
             command_func = _COMMANDS[command]
         except KeyError as e:
-            logger.error('%sinvalid command %r' % (maybe_line, command))
+            logger.error('%sinvalid command %r', maybe_line, command)
             errors = True
 
         values = []
@@ -126,7 +122,14 @@ def main():
                          (maybe_line, command, missing))
             errors = True
 
-        funcs.append((lambda v=values, cf=command_func: cf(*v), line))
+        kwargs = {}
+        for option in command_func._optional_options:
+            arg_name = option.lstrip('-').replace('-', '_')
+            if option in persistent_options_copy:
+                kwargs[arg_name] = persistent_options_copy[option]
+
+        funcs.append((lambda cf=command_func, v=values, k=kwargs: cf(*v, **k),
+                      line))
     if errors:
         logger.error('aborting due to errors; no commands were run.')
         return 1
@@ -144,19 +147,22 @@ def command(func):
     func's arguments should correspond to the names of command-line options
     (with internal hyphens replaced by underscores).
     """
+    global __doc__
     args, _, _, defaults = inspect.getargspec(func)
     options = ['--' + arg.replace('_', '-') for arg in args]
     n = len(args) - len(defaults or [])
     func._required_options = options[:n]
     func._optional_options = options[n:]
     _COMMANDS[func.__name__] = func
+    if func.__doc__:
+        __doc__ += func.__doc__.rstrip(' ')
     return func
 
 
 @command
-def check(vshost, vsuser):
-    logger.debug(['check', vshost, vsuser])
-    with pysphere_connection(vshost, vsuser) as server:
+def check(vsuser, vshost=None, vsport=None):
+    logger.debug(['check', vsuser, vshost, vsport])
+    with pysphere_connection(vshost, vsuser, vsport) as server:
         paths = server.get_registered_vms()
         names = []
         for path in paths:
@@ -168,44 +174,99 @@ def check(vshost, vsuser):
 
 
 @command
-def clone(vshost, vsuser, vm, dest_host, snapshot=None):
-    logger.debug(['clone', vshost, vsuser, vm, dest_host, snapshot])
-    with pysphere_connection(vshost, vsuser) as server:
-        logger.debug('Fetching VM {!r}'.format(vm))
-        source = server.get_vm_by_name(vm)
+def clone(vsuser, src_vm, dest_host, dest_vm, snapshot=None, vshost=None,
+          vsport=None):
+    """clone options:
+    --src-vm NAME       VM to clone
+    --dest-host NAME    destination host
+    --dest-vm NAME      name of resulting VM
+    --snapshot NAME     snapshot to create (no snapshot if absent)
+    """
+    logger.debug(['clone', vsuser, src_vm, dest_host, dest_vm, snapshot, vshost,
+                  vsport])
+    with pysphere_connection(vshost, vsuser, vsport) as server:
+        logger.debug('Fetching VM %r', src_vm)
+        source = server.get_vm_by_name(src_vm)
         source_name = source.get_property('name')
 
-        clone_name = make_unique_name(source_name)
-        logger.debug('Creating clone {!r}'.format(clone_name))
-        clone = source.clone(clone_name, power_on=False)
+        logger.debug('Creating clone %r', dest_vm)
+        clone = source.clone(dest_vm, power_on=False)
 
-        target_host = next(host for host, hostname in server.get_hosts().items()
-                                if hostname == dest_host)
-        logger.debug('Migrating clone to host {!r}'.format(target_host))
+        target_host = choose('target host', [server.get_hosts().items()],
+                             key=operator.itemgetter(1), choice=dest_host)[0]
+        logger.debug('Migrating clone to host %r', target_host)
         clone.migrate(host=target_host)
 
-        logger.debug('Creating snapshot {!r}'.format(snapshot))
-        clone.create_snapshot(snapshot)
+        if snapshot is not None:
+            logger.debug('Creating snapshot %r', snapshot)
+            clone.create_snapshot(snapshot)
 
 
 @command
-def info(vshost, vsuser, vm):
-    logger.debug(['info', vshost, vsuser, vm])
-    with pysphere_connection(vshost, vsuser) as server:
+def info(vsuser, vm, vshost=None, vsport=None):
+    """info options:
+    --vm NAME           VM about which to print info
+    """
+    logger.debug(['info', vsuser, vm, vshost, vsport])
+    with pysphere_connection(vshost, vsuser, vsport) as server:
         v = server.get_vm_by_name(vm)
         pprint.pprint(v.get_properties())
 
 
 @command
-def upload(vshost, vsuser, ovf, vm, dest_host, dest_folder=None,
-           network=None, provisioning=None, vsport=443):
-    logger.debug(['upload', vshost, vsuser, ovf, vm, dest_host, dest_folder,
-                  network, provisioning, vsport])
+def snapshot(vsuser, vm, snapshot, vshost=None, vsport=None):
+    """snapshot options:
+    --vm NAME           VM to snapshot
+    --snapshot NAME     snapshot to create
+    """
+    logger.debug(['snapshot', vsuser, vm, snapshot, vshost, vsport])
+    with pysphere_connection(vshost, vsuser, vsport) as server:
+        vm = server.get_vm_by_name(vm)
+        vm.create_snapshot(snapshot)
+
+
+@command
+def upload(vsuser, ovf, vm, dest_host, dest_folder=None, snapshot=None,
+           vshost=None, vsport=None):
+    """upload options:
+    --ovf PATH          OVF file to upload
+    --vm NAME           VM to create
+    --dest-host NAME    host on which to create VM
+    --dest-folder NAME  folder in which to create VM
+    --snapshot NAME     snapshot to create (no snapshot if absent)
+    """
+    logger.debug(['upload', vsuser, ovf, vm, dest_host, dest_folder, vshost,
+                  vsport])
     with vsphere_connection(vshost, vsuser, vsport) as conn:
         content = conn.RetrieveContent()
-        params = pyVmomi.vim.OvfManager.ParseDescriptorParams()
+
+        get_name = operator.attrgetter('name')
+        datacenter = choose('datacenter', content.rootFolder.childEntity)
+        host = choose('host',
+                      [ce.host[0] for ce in datacenter.hostFolder.childEntity],
+                      choice=dest_host)
+        folder = choose('folder', datacenter.vmFolder.childEntity)
+
         with open(ovf) as f:
-            result = content.ovfManager.ParseDescriptor(f.read(), params)
+            ovf_descriptor = f.read()
+        parse_descriptor_result = content.ovfManager.ParseDescriptor(
+                ovf_descriptor,
+                pyVmomi.vim.OvfManager.ParseDescriptorParams())
+        validate_host_result = content.ovfManager.ValidateHost(
+                ovf_descriptor,
+                host,
+                pyVmomi.vim.OvfManager.ValidateHostParams())
+        create_import_spec_result = content.ovfManager.CreateImportSpec(
+                ovf_descriptor,
+                resource_pool,
+                datastore,
+                pyVmomi.vim.OvfManager.CreateImportSpecParams())
+        import_spec = create_import_spec_result.importSpec
+        http_nfc_lease = resource_pool.ImportVApp(
+                import_spec,
+                folder,
+                host)
+
         #datacenter = content.rootFolder.childEntity[0]
         #vmfolder = datacenter.vmFolder
         #hosts = datacenter.hostFolder.childEntity
@@ -213,12 +274,12 @@ def upload(vshost, vsuser, ovf, vm, dest_host, dest_folder=None,
 
 
 @contextlib.contextmanager
-def pysphere_connection(host, username):
+def pysphere_connection(host, username, port):
+    host = host if host is not None else 'localhost'
+    host = '%s:%s' % (host, port) if port is not None else host
     password = get_password(host, username)
     server = pysphere.VIServer()
-    server.connect(host,
-                   username,
-                   password)
+    server.connect(host, username, password)
     logger.debug('pysphere_connection: connected to vSphere')
     yield server
     server.disconnect()
@@ -227,38 +288,67 @@ def pysphere_connection(host, username):
 
 @contextlib.contextmanager
 def vsphere_connection(host, username, port):
+    host = host if host is not None else 'localhost'
+    port = port if port is not None else 443
     password = get_password(host, username)
     service_instance = pyVim.connect.SmartConnect(
             host=host,
             user=username,
             pwd=password,
-            port=int(port))
+            port=port)
     logger.debug('vsphere_connection: connected to vSphere')
     yield service_instance
     pyVim.connect.Disconnect(service_instance)
     logger.debug('vsphere_connection: disconnected from vSphere')
 
 
+def _name_or_repr(obj):
+    try:
+        return obj.name
+    except AttributeError:
+        return repr(obj)
+
+
+def choose(type, items, key=_name_or_repr, choice=None):
+    if len(items) == 1:
+        logger.debug('automatically choosing sole %s %r', type, key(items[0]))
+        return items[0]
+    elif len(items) == 0:
+        raise ValueError('no %s available to choose' % type)
+
+    choices = {}
+    for n, thing in enumerate(items, start=1):
+        k = key(thing)
+        if choice is not None and k == choice:
+            logger.debug('choosing %s %r', type, choice)
+            return thing
+        else:
+            choices[n] = k
+
+    if choice is not None:
+        logger.warning('no such %s %r', type, choice)
+
+    print('Choose a %s:' % type)
+    print('\n'.join('  %s %s' % (n, k) for n, k in choices.items()))
+    while True:
+        try:
+            result = items[int(raw_input('Enter a number: ')) - 1]
+            break
+        except (KeyError, ValueError):
+            pass
+
+    logger.debug('chose %s %r', type, key(result))
+    return result
+
 def get_password(host, username):
     try:
         return get_password._saved[host, username]
     except KeyError:
-        password = getpass.getpass(prompt='Enter password for {}@{}: '
-                                          .format(username, host))
+        password = getpass.getpass(prompt='Enter password for %s@%s: ' %
+                                          (username, host))
         get_password._saved[host, username] = password
         return password
 get_password._saved = {}
-
-
-def make_unique_name(original_name):
-    match = re.match('(.*)-([0-9]+)$', original_name)
-    if match:
-        base = match.group(1)
-        number = int(match.group(2)) + 1
-    else:
-        base = original_name
-        number = 0
-    return '{}-{}'.format(base, number)
 
 
 def parse_args(argv, lineno=None):

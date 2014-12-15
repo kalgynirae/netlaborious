@@ -1,3 +1,2 @@
-beautifulsoup4==4.3.2
 pysphere==0.1.7
 pyvmomi==5.5.0.2014.1.1
