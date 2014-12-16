@@ -182,21 +182,33 @@ def clone(vsuser, src_vm, dest_host, dest_vm, snapshot=None, vshost=None,
     logger.debug(['clone', vsuser, src_vm, dest_host, dest_vm, snapshot, vshost,
                   vsport])
     with pysphere_connection(vshost, vsuser, vsport) as server:
-        logger.debug('Fetching VM %r', src_vm)
         source = server.get_vm_by_name(src_vm)
-        source_name = source.get_property('name')
-
-        logger.debug('Creating clone %r', dest_vm)
-        clone = source.clone(dest_vm, power_on=False)
-
-        target_host = choose('target host', [server.get_hosts().items()],
+        target_host = choose('target host', server.get_hosts().items(),
                              key=operator.itemgetter(1), choice=dest_host)[0]
+
+        # Find the resource_pool with the same parent as the target_host.
+        # See https://groups.google.com/d/msg/pysphere/PP-tX1DwqK4/Tw7fYSY6UP4J
+        resource_pool = None
+        target_host_parent = (server._get_object_properties(target_host,
+                                                            ['parent'])
+                              .PropSet[0].Val)
+        for rp in server.get_resource_pools().keys():
+            rp_parent = (server._get_object_properties(rp, ['parent'])
+                         .PropSet[0].Val)
+            if rp_parent == target_host_parent:
+                resource_pool = rp
+
+        # We don't have to check whether a VM named dest_vm already exists
+        # because pysphere checks this for us!
+        logger.debug('Creating clone %r', dest_vm)
+        source.clone(dest_vm, power_on=False)
+        clone = server.get_vm_by_name(dest_vm)
+
         logger.debug('Migrating clone to host %r', target_host)
-        clone.migrate(host=target_host)
+        clone.migrate(host=target_host, resource_pool=resource_pool)
 
         if snapshot is not None:
-            logger.debug('Creating snapshot %r', snapshot)
-            clone.create_snapshot(snapshot)
+            snapshot(vsuser, dest_vm, snapshot, vshost, vsport)
 
 
 @command
@@ -239,13 +251,14 @@ def snapshot(vsuser, vm, snapshot, vshost=None, vsport=None):
 
 
 @command
-def upload(vsuser, ovf, vm, dest_host, dest_folder=None, snapshot=None,
-           vshost=None, vsport=None):
+def upload(vsuser, ovf, vm, dest_host, dest_folder, dest_datastore,
+           resource_pool, snapshot=None, vshost=None, vsport=None):
     """upload options:
     --ovf PATH          OVF file to upload
     --vm NAME           VM to create
     --dest-host NAME    host on which to create VM
     --dest-folder NAME  folder in which to create VM
+    --dest-datastore DA datastore in which to store VM files
     --snapshot NAME     snapshot to create (no snapshot if absent)
     """
     with vsphere_connection(vshost, vsuser, vsport) as conn:
@@ -253,16 +266,22 @@ def upload(vsuser, ovf, vm, dest_host, dest_folder=None, snapshot=None,
 
         get_name = operator.attrgetter('name')
         datacenter = choose('datacenter', content.rootFolder.childEntity)
-        host = choose('host',
-                      [ce.host[0] for ce in datacenter.hostFolder.childEntity],
-                      choice=dest_host)
-        folder = choose('folder', datacenter.vmFolder.childEntity)
+        compute_resource = choose('host', datacenter.hostFolder.childEntity,
+                                  choice=dest_host)
+        host = compute_resource.host[0]
+        folder = choose('folder', datacenter.vmFolder.childEntity,
+                        choice=dest_folder)
+        resource_pool = compute_resource.resourcePool
+        datastore = choose('datastore', compute_resource.datastore,
+                           choice=dest_datastore)
 
+        # The following process is as described in the vSphere documentation:
+        # http://pubs.vmware.com/vsphere-50/index.jsp?topic=%2Fcom.vmware.wssdk.pg.doc_50%2FPG_Ch12_VirtualApplications.14.6.html
         with open(ovf) as f:
             ovf_descriptor = f.read()
         # Note: each of the following content.ovfManager.<something> calls
-        # takes a corresponding <something>Params object. We just use the
-        # default versions of those
+        # takes a corresponding <something>Params object. We just create the
+        # default versions of those objects.
         parse_descriptor_result = content.ovfManager.ParseDescriptor(
                 ovf_descriptor,
                 pyVmomi.vim.OvfManager.ParseDescriptorParams())
@@ -281,10 +300,17 @@ def upload(vsuser, ovf, vm, dest_host, dest_folder=None, snapshot=None,
                 folder,
                 host)
 
-        #datacenter = content.rootFolder.childEntity[0]
-        #vmfolder = datacenter.vmFolder
-        #hosts = datacenter.hostFolder.childEntity
-        #resource_pool = hosts[0].resourcePool
+        # TODO: Make http requests as specified by the http_nfc_lease:
+        # * Wait until http_nfc_lease.status changes to ready.
+        # * Make HTTP Post requests to the URLS provided in the http_nfc_lease
+        #   with the disk contents, etc. as data.
+        # * Call http_nfc_lease.HttpNfcLeaseProgress periodically so the lease
+        #   doesn't time out.
+        # * Call http_nfc_lease.HttpNfcLeaseComplete.
+        http_nfc_lease.HttpNfcLeaseAbort()
+
+        if snapshot is not None:
+            snapshot(vsuser, dest_vm, snapshot, vshost, vsport)
 
 
 @contextlib.contextmanager
