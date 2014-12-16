@@ -207,10 +207,11 @@ def info(vsuser, vm, vshost=None, vsport=None):
     """info options:
     --vm NAME           VM about which to print info
     """
-    logger.debug(['info', vsuser, vm, vshost, vsport])
     with pysphere_connection(vshost, vsuser, vsport) as server:
-        v = server.get_vm_by_name(vm)
-        pprint.pprint(v.get_properties())
+        vm = server.get_vm_by_name(vm)
+        pprint.pprint(vm.get_properties())
+        print('Snapshots:',
+              [snapshot.get_name() for snapshot in vm.get_snapshots()])
 
 
 @command
@@ -219,9 +220,24 @@ def snapshot(vsuser, vm, snapshot, vshost=None, vsport=None):
     --vm NAME           VM to snapshot
     --snapshot NAME     snapshot to create
     """
-    logger.debug(['snapshot', vsuser, vm, snapshot, vshost, vsport])
     with pysphere_connection(vshost, vsuser, vsport) as server:
         vm = server.get_vm_by_name(vm)
+
+        # It's possible for multiple snapshots to have the same name, but we
+        # want to avoid that scenario.
+        existing_snapshot_names = [s.get_name() for s in vm.get_snapshots()]
+        existing_same_name_count = existing_snapshot_names.count(snapshot)
+        if existing_snapshot_names > 0:
+            if ask('%s snapshots named %r exist and will be removed; proceed?' %
+                   (existing_same_name_count, snapshot)):
+                # Delete all snapshots with that name
+                for _ in range(existing_same_name_count):
+                    logger.debug('deleting snapshot %r', snapshot)
+                    vm.delete_named_snapshot(snapshot)
+            else:
+                return
+
+        logger.debug('creating snapshot %r', snapshot)
         vm.create_snapshot(snapshot)
 
 
@@ -235,8 +251,6 @@ def upload(vsuser, ovf, vm, dest_host, dest_folder=None, snapshot=None,
     --dest-folder NAME  folder in which to create VM
     --snapshot NAME     snapshot to create (no snapshot if absent)
     """
-    logger.debug(['upload', vsuser, ovf, vm, dest_host, dest_folder, vshost,
-                  vsport])
     with vsphere_connection(vshost, vsuser, vsport) as conn:
         content = conn.RetrieveContent()
 
@@ -249,6 +263,9 @@ def upload(vsuser, ovf, vm, dest_host, dest_folder=None, snapshot=None,
 
         with open(ovf) as f:
             ovf_descriptor = f.read()
+        # Note: each of the following content.ovfManager.<something> calls
+        # takes a corresponding <something>Params object. We just use the
+        # default versions of those
         parse_descriptor_result = content.ovfManager.ParseDescriptor(
                 ovf_descriptor,
                 pyVmomi.vim.OvfManager.ParseDescriptorParams())
@@ -307,6 +324,12 @@ def _name_or_repr(obj):
         return obj.name
     except AttributeError:
         return repr(obj)
+
+
+def ask(question):
+    prompt = '%s (y/N) ' % question
+    response = raw_input(prompt)
+    return response in 'Yy'
 
 
 def choose(type, items, key=_name_or_repr, choice=None):
