@@ -329,7 +329,7 @@ def _name_or_repr(obj):
 def ask(question):
     prompt = '%s (y/N) ' % question
     response = raw_input(prompt)
-    return response in 'Yy'
+    return response in ['Y', 'y']
 
 
 def choose(type, items, key=_name_or_repr, choice=None):
