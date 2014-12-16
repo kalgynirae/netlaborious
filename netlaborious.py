@@ -6,8 +6,8 @@ Commands:
   batch                 Read lines of arguments from stdin. Each line
                         corresponds to a single invocation of this script.
   check                 Check whether the existing VMs have unique names.
-  clone                 Clone an existing VM to all other hosts (and make
-                        snapshots).
+  clone                 Clone an existing VM to another host (TODO: to *all*
+                        other hosts).
   info                  Print detailed information about a VM.
   upload                Upload an OVF template to a particular host and make
                         a snapshot of it.
@@ -19,14 +19,11 @@ Common options:
 """
 from __future__ import print_function
 import contextlib
-import functools
 import getpass
 import inspect
-import itertools
 import logging
 import operator
 import pprint
-import re
 import shlex
 import sys
 
