@@ -1,20 +1,19 @@
 """
-usage: netlaborious [--verbose] (batch|upload|clone) [options]
+usage: netlaborious [--verbose] <command> [options]
        netlaborious --help
 
 Commands:
   batch                 Read lines of arguments from stdin. Each line
                         corresponds to a single invocation of this script.
-  check                 Check whether the existing VMs have unique names.
   clone                 Clone an existing VM to another host (TODO: to *all*
                         other hosts).
   info                  Print detailed information about a VM.
-  upload                Upload an OVF template to a particular host and make
-                        a snapshot of it.
+  snapshot              Create a new snapshot of a VM.
+  upload                Upload an OVF template to a particular host.
 
 Common options:
     --vshost HOST       vSphere host (default: localhost)
-    --vsport PORT       vSphere port (default: 443)
+    --vsport PORT       vSphere port (default: unspecified)
     --vsuser USER       vSphere username
 """
 from __future__ import print_function
@@ -157,20 +156,6 @@ def command(func):
 
 
 @command
-def check(vsuser, vshost=None, vsport=None):
-    logger.debug(['check', vsuser, vshost, vsport])
-    with pysphere_connection(vshost, vsuser, vsport) as server:
-        paths = server.get_registered_vms()
-        names = []
-        for path in paths:
-            name = server.get_vm_by_path(path).get_property('name')
-            names.append(name)
-            print('name=%r path=%r' % (name, path))
-        print('%s names total' % len(names))
-        print('%s unique names' % len(set(names)))
-
-
-@command
 def clone(vsuser, src_vm, dest_host, dest_vm, snapshot=None, vshost=None,
           vsport=None):
     """clone options:
@@ -259,6 +244,7 @@ def upload(vsuser, ovf, vm, dest_host, dest_folder, dest_datastore,
     --dest-host NAME    host on which to create VM
     --dest-folder NAME  folder in which to create VM
     --dest-datastore DA datastore in which to store VM files
+    --resource-pool RP  resource pool to which to import VM
     --snapshot NAME     snapshot to create (no snapshot if absent)
     """
     with vsphere_connection(vshost, vsuser, vsport) as conn:
