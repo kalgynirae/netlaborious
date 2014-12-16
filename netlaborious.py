@@ -324,12 +324,24 @@ def _name_or_repr(obj):
 
 
 def ask(question):
+    """Ask question and return True if the user says yes, False otherwise."""
     prompt = '%s (y/N) ' % question
     response = raw_input(prompt)
     return response in ['Y', 'y']
 
 
 def choose(type, items, key=_name_or_repr, choice=None):
+    """Return one item from items, prompting the user to select if necessary.
+
+    If items only contains one item, it is returned immediately.
+
+    key is a function that converts an item into a string representation that
+    will be displayed to the user and used to match against choice.
+
+    If choice is specified and an item whose key matches choice is found, that
+    item is returned; otherwise, a warning is printed and the user is prompted
+    to select an item.
+    """
     if len(items) == 1:
         logger.debug('automatically choosing sole %s %r', type, key(items[0]))
         return items[0]
@@ -361,6 +373,11 @@ def choose(type, items, key=_name_or_repr, choice=None):
     return result
 
 def get_password(host, username):
+    """Prompt the user to enter the password for username@host.
+
+    If a password has been entered before for this username/host combination,
+    the previously-entered password is returned without prompting the user.
+    """
     try:
         return get_password._saved[host, username]
     except KeyError:
