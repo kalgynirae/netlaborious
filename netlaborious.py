@@ -16,7 +16,9 @@ Common options:
     --vsport PORT       vSphere port (default: unspecified)
     --vsuser USER       vSphere username
 """
+from __future__ import division
 from __future__ import print_function
+import code
 import contextlib
 import getpass
 import inspect
@@ -25,10 +27,12 @@ import operator
 import pprint
 import shlex
 import sys
+import time
 
 import pysphere
 import pyVim.connect
 import pyVmomi
+import requests
 
 
 _COMMANDS = {}
@@ -287,13 +291,27 @@ def upload(vsuser, ovf, vm, dest_host, dest_folder, dest_datastore,
                 host)
 
         # TODO: Make http requests as specified by the http_nfc_lease:
-        # * Wait until http_nfc_lease.status changes to ready.
+
+        # * Wait until http_nfc_lease.state changes to ready.
+        while http_nfc_lease.state != 'ready':
+            time.sleep(0.5)
+
         # * Make HTTP Post requests to the URLS provided in the http_nfc_lease
         #   with the disk contents, etc. as data.
-        # * Call http_nfc_lease.HttpNfcLeaseProgress periodically so the lease
-        #   doesn't time out.
-        # * Call http_nfc_lease.HttpNfcLeaseComplete.
-        http_nfc_lease.HttpNfcLeaseAbort()
+        upload_count = len(http_nfc_lease.info.deviceUrl)
+        progress = (100 * n // upload_count for n in range(upload_count))
+        for device_url in http_nfc_lease.info.deviceUrl:
+            http_nfc_lease.Progress(next(progress))
+            url = device_url.url
+            code.interact(local=locals())
+            # TODO: Figure out which file should be uploaded
+            data = None
+            # TODO: Figure out how to keep the http_nfc_lease from timing out
+            # during this request
+            requests.post(url, data)
+
+        #TODO: replace the following with http_nfc_lease.Complete()
+        http_nfc_lease.Abort()
 
         if snapshot is not None:
             snapshot(vsuser, dest_vm, snapshot, vshost, vsport)
